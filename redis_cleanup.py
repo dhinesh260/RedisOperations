@@ -53,19 +53,31 @@ log = logging.getLogger(__name__)
 
 def is_stale(remaining_ttl: int, original_ttl: int, cutoff_age_seconds: float) -> bool:
     """
-    Return True if the key was created before the cutoff.
+    Return True if the key is older than the cutoff and should be deleted.
 
     remaining_ttl      — seconds until the key expires (from Redis TTL command)
     original_ttl       — seconds the key was given at creation
-    cutoff_age_seconds — keys older than this many seconds should be deleted
+    cutoff_age_seconds — keys >= this many seconds old should be deleted
 
-    Example (original_ttl=7d, keep_days=1):
-        remaining_ttl=691200  → age=43200  (12 hrs old)  → RECENT, keep
-        remaining_ttl=518400  → age=86400  (1 day old)   → STALE,  delete
-        remaining_ttl=86400   → age=518400 (6 days old)  → STALE,  delete
+    age = original_ttl - remaining_ttl
+
+    Example (original_ttl=7 days=604800s, keep_days=1, cutoff=86400s):
+        remaining_ttl=561600s → age=43200s  (12 hrs old)  → KEEP
+        remaining_ttl=518400s → age=86400s  (1 day old)   → DELETE  (at boundary)
+        remaining_ttl=432000s → age=172800s (2 days old)  → DELETE
+        remaining_ttl=86400s  → age=518400s (6 days old)  → DELETE
+
+    Safety: if remaining_ttl > original_ttl (TTL was extended after creation),
+    age would be negative — we treat such keys as recent and keep them.
     """
     age_seconds = original_ttl - remaining_ttl
-    return age_seconds > cutoff_age_seconds
+
+    # Guard: negative age means TTL was extended/reset — treat as recent, keep it
+    if age_seconds < 0:
+        return False
+
+    # Delete if age is AT or BEYOND the cutoff (>=)
+    return age_seconds >= cutoff_age_seconds
 
 
 def cleanup_db(
